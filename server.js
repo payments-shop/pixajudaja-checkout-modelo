@@ -1,229 +1,208 @@
-const http = require('http');
-const https = require('https');
-const url = require('url');
-const querystring = require('querystring');
-const fs = require('fs');
-const path = require('path');
+const express = require("express");
+const https = require("https");
+const axios = require("axios");
+const cheerio = require("cheerio");
+const cookieParser = require("cookie-parser");
+const path = require("path");
+const crypto = require("crypto");
 
-// Tenta carregar o cheerio para um parsing de HTML mais robusto
-let cheerio;
+// Carrega variáveis de ambiente
 try {
-  cheerio = require('cheerio');
+  require("dotenv").config();
 } catch (e) {
-  console.warn('Aviso: Cheerio não encontrado. Usando fallback de Regex para extração do PIX.');
+  console.log("Aviso: dotenv não carregado. Certifique-se de que as variáveis de ambiente estão configuradas.");
 }
 
-// ==================== CONFIGURAÇÕES FIXAS ====================
-const CAMPAIGN_ID = '133622'; // ID da sua campanha no ajudaja.com.br
-// =============================================================
-
+const app = express();
 const PORT = process.env.PORT || 3000;
+const CAMPAIGN_ID = process.env.CAMPAIGN_ID || "133622";
 
-const mimeTypes = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'application/javascript',
-  '.css': 'text/css',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-};
+// Armazenamento simples de cookies
+const cookieStore = {};
 
-function makeRequest(options, postData) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => resolve({ 
-        statusCode: res.statusCode, 
-        headers: res.headers, 
-        body: data 
-      }));
+// Configuração de CORS para permitir requisições de qualquer origem
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Cookie, X-Requested-With");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  if (req.method === "OPTIONS") return res.sendStatus(204); // Responde a preflight requests
+  next();
+});
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+// Configuração da instância Axios para interagir com o site externo
+const axiosInstance = axios.create({
+  baseURL: "https://ajudaja.com.br",
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Origin": "https://ajudaja.com.br",
+    "X-Requested-With": "XMLHttpRequest",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "identity", // Desabilita compressão para evitar erros de socket
+    "Connection": "close", // Força o fechamento da conexão para evitar socket hang up em retentativas
+  },
+  withCredentials: true,
+  timeout: 30000,
+});
+
+// Interceptor de requisição para adicionar cookies do store
+axiosInstance.interceptors.request.use(config => {
+  const cookies = Object.keys(cookieStore).map(key => `${key}=${cookieStore[key]}`).join("; ");
+  if (cookies) {
+    config.headers.Cookie = cookies;
+  }
+  return config;
+});
+
+// Interceptor de resposta para salvar cookies no store e lidar com o erro 409
+axiosInstance.interceptors.response.use(response => {
+  const setCookieHeaders = response.headers["set-cookie"];
+  if (setCookieHeaders) {
+    setCookieHeaders.forEach(cookieString => {
+      const [nameValue] = cookieString.split(";");
+      const [name, value] = nameValue.split("=");
+      cookieStore[name.trim()] = value;
     });
-    req.on('error', (err) => {
-      console.error('Erro na requisição HTTPS:', err.message);
-      reject(err);
-    });
-    req.setTimeout(30000, () => {
-      req.destroy();
-      reject(new Error('Tempo limite da requisição (timeout) atingido'));
-    });
-    if (postData) req.write(postData);
-    req.end();
-  });
+  }
+  return response;
+}, async error => {
+  const { config, response } = error;
+  
+  // Se a resposta for 409 e contiver o script de bot detection
+  if (response && response.status === 409 && response.data.includes("humans_21909=1")) {
+    console.log("Detectado erro 409 de bot detection. Tentando contornar...");
+    
+    const cookieMatch = response.data.match(/document\.cookie = "(.*?)";/);
+    if (cookieMatch && cookieMatch[1]) {
+      const cookieString = cookieMatch[1];
+      const [name, value] = cookieString.split("=");
+      cookieStore[name.trim()] = value;
+      console.log(`Cookie \'${name}\' adicionado ao store.`);
+    }
+
+    console.log("Retentando a requisição original...");
+    // Cria uma nova configuração para a retentativa para garantir que os headers sejam atualizados
+    const retryConfig = {
+      ...config,
+      headers: { ...config.headers }
+    };
+    return axiosInstance(retryConfig);
+  }
+
+  console.error("Erro na requisição Axios:", error.message);
+  return Promise.reject(error);
+});
+
+/**
+ * Gera um Gmail com nome (2 letras) e sobrenome (2 primeiras + última) abreviados
+ */
+function generateHighlyVariableGmailFromCpf(cpf) {
+  const firstNames = ["gabriel", "lucas", "mateus", "felipe", "rafael", "bruno", "thiago", "vinicius", "rodrigo", "andre", "julia", "fernanda", "beatriz", "larissa", "camila", "amanda", "leticia", "mariana", "carolina", "isabela"];
+  const lastNames = ["silva", "santos", "oliveira", "souza", "rodrigues", "ferreira", "alves", "pereira", "lima", "gomes", "costa", "ribeiro", "martins", "carvalho", "almeida", "lopes", "soares", "fernandes", "vieira", "barbosa"];
+
+  const cleanCpf = (cpf || "").replace(/\D/g, "");
+  const seed = cleanCpf ? parseInt(crypto.createHash("md5").update(cleanCpf).digest("hex").substring(0, 8), 16) : Math.floor(Math.random() * 1000000);
+  
+  const firstName = firstNames[seed % firstNames.length].substring(0, 2);
+  const fullLastName = lastNames[(seed >> 2) % lastNames.length];
+  const lastName = fullLastName.substring(0, 2) + fullLastName.slice(-1);
+  
+  const suffixCpf = cleanCpf.substring(8, 11) || String(Math.floor(Math.random() * 900 + 100));
+  const randomNum = Math.floor(Math.random() * 900 + 100);
+  const shortNum = Math.floor(Math.random() * 90 + 10);
+
+  const formats = [
+    `${firstName}.${lastName}${randomNum}`,
+    `${lastName}${firstName}${suffixCpf}`,
+    `${firstName}_${lastName}${shortNum}`,
+    `${lastName}.${firstName}${randomNum}`,
+    `${firstName}${lastName}${suffixCpf}${shortNum}`,
+    `${lastName}_${firstName}${randomNum}`,
+    `${firstName}${randomNum}${lastName}`,
+    `${lastName}${shortNum}${firstName}`,
+    `${firstName}.${lastName}.${suffixCpf}`,
+    `${lastName}_${firstName}_${shortNum}`,
+    `${firstName}${lastName}${randomNum}${shortNum}`
+  ];
+  
+  const selectedFormat = formats[seed % formats.length].replace(/\s/g, ".");
+  return `${selectedFormat}@gmail.com`.toLowerCase();
 }
 
-const server = http.createServer(async (req, res) => {
-  // Configuração de CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+// Rota principal para processamento de PIX
+app.post("/proxy/pix", async (req, res, next) => {
+  console.log("--- Nova requisição PIX recebida ---");
+  const { payer_name, payer_email, amount, payer_cpf } = req.body;
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
+  if (!payer_name || !amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+    console.error("Erro: Nome ou valor inválido/ausente.");
+    return res.status(400).json({ error: "Nome e valor válidos são obrigatórios." });
   }
 
-  const parsedUrl = url.parse(req.url, true);
-  const pathname = parsedUrl.pathname;
+  try {
+    const finalEmail = (!payer_email || payer_email === "nao@informado.com") 
+      ? generateHighlyVariableGmailFromCpf(payer_cpf)
+      : payer_email;
 
-  // Rota do Proxy PIX
-  if (pathname === '/proxy/pix' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        console.log('--- Nova requisição PIX recebida ---');
-        let params;
-        try {
-          params = JSON.parse(body);
-        } catch (e) {
-          console.error('Erro ao parsear JSON do frontend:', e.message);
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'JSON enviado pelo frontend é inválido', details: e.message }));
-          return;
-        }
+    console.log("CPF:", payer_cpf, "| Email Gerado:", finalEmail);
 
-        console.log('Parâmetros recebidos:', { 
-          campaign_id: CAMPAIGN_ID, 
-          payer_name: params.payer_name, 
-          amount: params.amount 
-        });
+    const postData = new URLSearchParams({
+      campaign_id: CAMPAIGN_ID,
+      payer_name: payer_name,
+      payer_email: finalEmail,
+      msg: "",
+      amount: parseFloat(amount).toFixed(2),
+    }).toString();
 
-        const postData = querystring.stringify({
-          campaign_id: CAMPAIGN_ID,
-          payer_name: params.payer_name,
-          payer_email: params.payer_email || 'nao@informado.com',
-          msg: '',
-          amount: params.amount,
-        });
-
-        console.log('Passo 1: Solicitando pagamento ao ajudaja...');
-        const ajudajaResponse = await makeRequest({
-          hostname: 'ajudaja.com.br',
-          path: '/ajudar/ajax_payment_pix.php',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Content-Length': Buffer.byteLength(postData),
-            'Referer': `https://ajudaja.com.br/ajudar/?x=${CAMPAIGN_ID}`,
-            'X-Requested-With': 'XMLHttpRequest',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Origin': 'https://ajudaja.com.br',
-            'Accept': 'application/json, text/javascript, */*; q=0.01'
-          },
-        }, postData);
-
-        if (ajudajaResponse.statusCode !== 200) {
-          console.error('Erro na API do ajudaja. Status:', ajudajaResponse.statusCode, 'Body:', ajudajaResponse.body.substring(0, 200));
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Falha na comunicação com o provedor de pagamento', status: ajudajaResponse.statusCode, details: ajudajaResponse.body.substring(0, 200) }));
-          return;
-        }
-
-        let ajudajaData;
-        try {
-          ajudajaData = JSON.parse(ajudajaResponse.body);
-        } catch (e) {
-          console.error('Resposta do ajudaja não é um JSON válido:', ajudajaResponse.body.substring(0, 200));
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Resposta inválida do provedor', raw: ajudajaResponse.body.substring(0, 100), details: e.message }));
-          return;
-        }
-
-        if (ajudajaData.status !== 'ok' || !ajudajaData.url) {
-          console.warn('Ajudaja retornou erro ou URL ausente:', JSON.stringify(ajudajaData).substring(0, 200));
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'O provedor recusou a geração do PIX', details: ajudajaData }));
-          return;
-        }
-
-        console.log('Passo 2: Buscando código PIX na página:', ajudajaData.url);
-        const pixPageResponse = await makeRequest({
-          hostname: 'ajudaja.com.br',
-          path: `/ajudar/${ajudajaData.url}`,
-          method: 'GET',
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': `https://ajudaja.com.br/ajudar/?x=${CAMPAIGN_ID}`,
-          },
-        });
-
-        const pixHtml = pixPageResponse.body;
-        let pixCode = null;
-
-        // Tenta extrair usando Cheerio (mais robusto)
-        if (cheerio) {
-          const $ = cheerio.load(pixHtml);
-          pixCode = $('input[id^="qr_code_text_"]').val() || $('input[value^="0002"]').val();
-        }
-
-        // Fallback para Regex se Cheerio falhar ou não estiver disponível
-        if (!pixCode) {
-          const match1 = pixHtml.match(/id="qr_code_text_[^"]*".*?value="([^"]+)"/);
-          const match2 = pixHtml.match(/value="(0002[^"]+)"/);
-          pixCode = (match1 ? match1[1] : null) || (match2 ? match2[1] : null);
-        }
-
-        if (!pixCode) {
-          console.error('Não foi possível localizar o código PIX no HTML retornado. Início do HTML:', pixHtml.substring(0, 500));
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Erro ao extrair o código PIX da página de destino', html_snippet: pixHtml.substring(0, 500) }));
-          return;
-        }
-
-        console.log('PIX extraído com sucesso!');
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, pixCode: pixCode }));
-
-      } catch (err) {
-        console.error('Erro crítico no processamento do proxy:', err.message, err.stack);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Erro interno no servidor proxy', message: err.message, stack: err.stack }));
-      }
+    console.log("Enviando POST para ajudaja.com.br/ajudar/ajax_payment_pix.php");
+    const ajudajaResponse = await axiosInstance.post("/ajudar/ajax_payment_pix.php", postData, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": `https://ajudaja.com.br/ajudar/?x=${CAMPAIGN_ID}`,
+      },
     });
-    return;
-  }
 
-  // Health check endpoint
-  if (pathname === '/health' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', uptime: process.uptime() }));
-    return;
-  }
-
-  // Servir arquivos estáticos
-  let filePath = path.join(__dirname, pathname === '/' ? 'index.html' : pathname);
-  const ext = path.extname(filePath);
-  const contentType = mimeTypes[ext] || 'text/plain';
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      if (err.code === 'ENOENT') {
-        // Fallback para index.html (útil para SPAs)
-        fs.readFile(path.join(__dirname, 'index.html'), (err2, data2) => {
-          if (err2) {
-            res.writeHead(404);
-            res.end('Arquivo não encontrado');
-          } else {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(data2);
-          }
-        });
-      } else {
-        console.error('Erro ao ler arquivo estático:', err.message);
-        res.writeHead(500);
-        res.end('Erro interno ao ler arquivo');
-      }
-    } else {
-      res.writeHead(200, { 'Content-Type': contentType });
-      res.end(data);
+    if (ajudajaResponse.status !== 200) {
+      return res.status(502).json({ error: "Erro no provedor externo", details: ajudajaResponse.data });
     }
-  });
+
+    const ajudajaData = ajudajaResponse.data;
+    if (ajudajaData.status !== "ok" || !ajudajaData.url) {
+      return res.status(400).json({ error: "Provedor recusou PIX", details: ajudajaData });
+    }
+
+    console.log("URL para página PIX:", ajudajaData.url);
+    const pixPageResponse = await axiosInstance.get(`/ajudar/${ajudajaData.url}`, {
+      headers: { "Referer": `https://ajudaja.com.br/ajudar/?x=${CAMPAIGN_ID}` },
+    });
+
+    const $ = cheerio.load(pixPageResponse.data);
+    let pixCode = $("input[id^=\"qr_code_text_\"]").val() || 
+                  $("input[value^=\"0002\"]").val() || 
+                  $("textarea[readonly]").val() || 
+                  $("div:contains(\"00020\")").text().match(/00020\d{10,}/)?.[0] || 
+                  $("p:contains(\"00020\")").text().match(/00020\d{10,}/)?.[0];
+
+    if (!pixCode) {
+      return res.status(500).json({ error: "Erro ao extrair PIX." });
+    }
+
+    console.log("Código PIX extraído com sucesso.");
+    res.status(200).json({ success: true, pixCode: pixCode });
+
+  } catch (err) {
+    console.error("Erro interno na rota /proxy/pix:", err.message);
+    res.status(500).json({ error: "Erro interno do servidor", message: err.message });
+  }
 });
 
-server.listen(PORT, () => {
-  console.log(`Servidor de Checkout rodando na porta ${PORT}`);
-});
+app.get("/health", (req, res) => res.status(200).json({ status: "ok", timestamp: new Date().toISOString() }));
+app.use(express.static(path.join(__dirname, "public")));
+app.get("*", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+
+app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
