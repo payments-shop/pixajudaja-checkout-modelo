@@ -1,15 +1,19 @@
 {
   "name": "checkout-pix-ajudaja",
-  "version": "1.0.0",
-  "description": "Sistema de checkout com integração PIX via ajudaja.com.br",
+  "version": "1.1.1",
+  "description": "Sistema de checkout com integração PIX - Versão Corrigida",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "cheerio": "^1.0.0-rc.12"
+    "axios": "^1.6.8",
+    "cheerio": "^1.0.0-rc.12",
+    "express": "^4.19.2",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.5"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18.0.0"
   }
 }
